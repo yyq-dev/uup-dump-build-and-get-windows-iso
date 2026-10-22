@@ -1,7 +1,7 @@
 name: Build Windows
 run-name: >
   ${{ inputs.versions }}
-  ${{ fromJSON('{"Pro":"PRO","Home":"HOME","Multi":"MULTI"}')[inputs.edition] }}
+  ${{ fromJSON('{"Pro":"PRO","Home":"HOME","Home China":"HOMECHINA","Multi":"MULTI"}')[inputs.edition] }}
   ${{ fromJSON('{"x64":"X64","arm64":"ARM64"}')[inputs.architecture] }}
   ${{ fromJSON('{
     "Arabic (Saudi Arabia)":"AR","Bulgarian (Bulgaria)":"BG","Czech (Czech Republic)":"CS","Danish (Denmark)":"DA","German (Germany)":"DE","Greek (Greece)":"EL",
@@ -15,6 +15,7 @@ run-name: >
   ${{ inputs.esd && 'ESD' || '' }}
   ${{ inputs.drivers && 'DRIVERS' || '' }}
   ${{ inputs.netfx3 && 'NETFX3' || '' }}
+  ${{ inputs.virtual && 'VIRTUAL' || '' }}
 
 on:
   workflow_dispatch:
@@ -45,7 +46,11 @@ on:
       edition:
         description: "Windows edition to build"
         type: choice
-        options: [Pro, Home, Multi]
+        options:
+          - Pro
+          - Home
+          - Home China
+          - Multi
         default: Pro
         required: true
       language:
@@ -111,6 +116,15 @@ on:
         type: boolean
         required: true
         default: false
+      virtual:
+        description: "Convert to virtual editions (Pro only; specify virtual_edition for other SKUs)"
+        type: boolean
+        required: true
+        default: false
+      virtual_edition:
+        description: "Explicit virtual edition SKU (e.g. ProfessionalWorkstation). Optional; used with virtual=true."
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -183,8 +197,17 @@ jobs:
             'Windows CANARY'                 = 'windows-canary'
           }
 
-          $langCode = $langMap['${{ inputs.language }}']
-          $verCode  = $verMap['${{ inputs.versions }}']
+          # 将 workflow 的 edition 选项映射到脚本的 -edition 参数值
+          $editionMap = @{
+            'Pro'        = 'pro'
+            'Home'       = 'core'
+            'Home China' = 'home'
+            'Multi'      = 'multi'
+          }
+
+          $langCode    = $langMap['${{ inputs.language }}']
+          $verCode     = $verMap['${{ inputs.versions }}']
+          $editionCode = $editionMap['${{ inputs.edition }}']
 
           $opts = ''
           if ('${{ inputs.esd }}' -eq 'true')     { $opts += ' -esd' }
@@ -192,22 +215,39 @@ jobs:
             $opts += ' -drivers'
           }
           if ('${{ inputs.netfx3 }}' -eq 'true')  { $opts += ' -netfx3' }
-          if (-not [string]::IsNullOrWhiteSpace('${{ inputs.revision }}')) {
-            $opts += ' -revision "${{ inputs.revision }}"'
+
+          # 虚拟版本相关
+          $virtFlag = $false
+          if ('${{ inputs.virtual }}' -eq 'true') {
+            $opts += ' -virtual'
+            $virtFlag = $true
+          }
+          $virtSku = '${{ inputs.virtual_edition }}'
+          if (-not [string]::IsNullOrWhiteSpace($virtSku)) {
+            if (-not $virtFlag) { $opts += ' -virtual' }
+            $opts += " -virtualEdition `"$virtSku`""
+            $virtFlag = $true
+          }
+
+          $rev = '${{ inputs.revision }}'
+          if (-not [string]::IsNullOrWhiteSpace($rev)) {
+            $opts += " -revision `"$rev`""
           }
           $opts = $opts.Trim()
 
-          echo "lang=$langCode"    >> $env:GITHUB_OUTPUT
-          echo "version=$verCode"  >> $env:GITHUB_OUTPUT
+          echo "lang=$langCode"          >> $env:GITHUB_OUTPUT
+          echo "version=$verCode"        >> $env:GITHUB_OUTPUT
+          echo "edition=$editionCode"    >> $env:GITHUB_OUTPUT
+          echo "virtual=$($virtFlag.ToString().ToLower())" >> $env:GITHUB_OUTPUT
           if ($opts) {
-            echo "options=$opts"   >> $env:GITHUB_OUTPUT
+            echo "options=$opts"         >> $env:GITHUB_OUTPUT
           }
 
       - name: Build Windows
         id: build_windows
         shell: pwsh
         run: |
-          pwsh uup-dump-get-windows-iso.ps1 ${{ steps.map.outputs.version }} ${{ inputs.architecture == 'arm64' && 'c:/output' || 'd:/output' }} -architecture ${{ inputs.architecture }} -edition ${{ inputs.edition }} -lang ${{ steps.map.outputs.lang }} ${{ steps.map.outputs.options }}
+          pwsh uup-dump-get-windows-iso.ps1 ${{ steps.map.outputs.version }} ${{ inputs.architecture == 'arm64' && 'c:/output' || 'd:/output' }} -architecture ${{ inputs.architecture }} -edition ${{ steps.map.outputs.edition }} -lang ${{ steps.map.outputs.lang }} ${{ steps.map.outputs.options }}
           echo "iso_name=$env:ISO_NAME" >> $env:GITHUB_OUTPUT
 
       - name: Create split zip
@@ -260,6 +300,7 @@ jobs:
               '-esd'     = 'Use ESD compression'
               '-drivers' = 'Add additional drivers'
               '-netfx3'  = 'Add .NET Framework 3.5'
+              '-virtual' = 'Convert to virtual editions'
             }
             # split -> normalize -> map -> deduplicate
             $items = $opts -split '\s+' |
@@ -319,7 +360,16 @@ jobs:
           echo "title=$($iso.title)" >> $env:GITHUB_ENV
           echo "images=$($finalImageName)" >> $env:GITHUB_ENV
           echo "iso_checksum=$($iso.checksum)" >> $env:GITHUB_ENV
-          echo "tagname=$($iso.build).$($iso.version).${{ fromJSON('{"Pro":"PRO","Home":"HOME","Multi":"MULTI"}')[inputs.edition] }}.${{ fromJSON('{"x64":"X64","arm64":"ARM64"}')[inputs.architecture] }}.${{ fromJSON('{"ar-sa":"AR","bg-bg":"BG","cs-cz":"CS","da-dk":"DA","de-de":"DE","el-gr":"EL","en-gb":"EN","en-us":"EN","es-es":"ES","es-mx":"ES","et-ee":"ET","fi-fi":"FI","fr-ca":"FR","fr-fr":"FR","he-il":"HE","hr-hr":"HR","hu-hu":"HU","it-it":"IT","ja-jp":"JA","ko-kr":"KO","lt-lt":"LT","lv-lv":"LV","nb-no":"NB","nl-nl":"NL","pl-pl":"PL","pt-br":"PT","pt-pt":"PT","ro-ro":"RO","ru-ru":"RU","sk-sk":"SK","sl-si":"SL","sr-latn-rs":"SR","sv-se":"SV","th-th":"TH","tr-tr":"TR","uk-ua":"UK","zh-cn":"ZH","zh-tw":"ZH"}')[steps.map.outputs.lang] }}$($iso.tags)" >> $env:GITHUB_ENV
+
+          # tag: build.version.EDITION.ARCH.LANG[.V or .V<SKU>]
+          $tagEdition = fromJSON('{"Pro":"PRO","Home":"HOME","Home China":"HOMECHINA","Multi":"MULTI"}')['${{ inputs.edition }}']
+          $tagArch    = fromJSON('{"x64":"X64","arm64":"ARM64"}')['${{ inputs.architecture }}']
+          $tagLang    = fromJSON('{"ar-sa":"AR","bg-bg":"BG","cs-cz":"CS","da-dk":"DA","de-de":"DE","el-gr":"EL","en-gb":"EN","en-us":"EN","es-es":"ES","es-mx":"ES","et-ee":"ET","fi-fi":"FI","fr-ca":"FR","fr-fr":"FR","he-il":"HE","hr-hr":"HR","hu-hu":"HU","it-it":"IT","ja-jp":"JA","ko-kr":"KO","lt-lt":"LT","lv-lv":"LV","nb-no":"NB","nl-nl":"NL","pl-pl":"PL","pt-br":"PT","pt-pt":"PT","ro-ro":"RO","ru-ru":"RU","sk-sk":"SK","sl-si":"SL","sr-latn-rs":"SR","sv-se":"SV","th-th":"TH","tr-tr":"TR","uk-ua":"UK","zh-cn":"ZH","zh-tw":"ZH"}')['${{ steps.map.outputs.lang }}']
+          $tagVirtual = ''
+          if ('${{ steps.map.outputs.virtual }}' -eq 'true') {
+            $tagVirtual = if ('${{ inputs.virtual_edition }}' -ne '') { '.V' + ('${{ inputs.virtual_edition }}' -replace '[^A-Za-z0-9]','') } else { '.V' }
+          }
+          echo "tagname=$($iso.build).$($iso.version).$tagEdition.$tagArch.$tagLang$tagVirtual$($iso.tags)" >> $env:GITHUB_ENV
 
       - name: Create Release
         id: create_release
