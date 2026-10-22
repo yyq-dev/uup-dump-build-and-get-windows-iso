@@ -7,8 +7,8 @@ param(
   [ValidateSet("pro", "core", "multi", "home")] [string]$edition = "pro",
   [ValidateSet("nb-no", "fr-ca", "fi-fi", "lv-lv", "es-es", "en-gb", "zh-tw", "th-th", "sv-se", "en-us", "es-mx", "bg-bg", "hr-hr", "pt-br", "el-gr", "cs-cz", "it-it", "sk-sk", "pl-pl", "sl-si", "neutral", "ja-jp", "et-ee", "ro-ro", "fr-fr", "pt-pt", "ar-sa", "lt-lt", "hu-hu", "da-dk", "zh-cn", "uk-ua", "tr-tr", "ru-ru", "nl-nl", "he-il", "ko-kr", "sr-latn-rs", "de-de")]
   [string]$lang = "en-us",
-  # >>> CHANGED: 新增虚拟版本参数，仅对 pro / multi 生效
-  [ValidateSet("Education", "Enterprise", "ProfessionalEducation", "ProfessionalWorkstation")]
+  # >>> CHANGED: 增加 All 选项
+  [ValidateSet("All", "Education", "Enterprise", "ProfessionalEducation", "ProfessionalWorkstation")]
   [string]$virtualEdition,
   [switch]$esd,
   [switch]$drivers,
@@ -107,7 +107,7 @@ if ($windowsTargetName -match 'beta|dev|wif|canary') {
   $ringLower = @('beta','dev','wif','canary').Where({$windowsTargetName -match $_})[0]
 }
 
-# >>> CHANGED: core/home 现在映射到 CoreCountrySpecific
+# >>> CHANGED: core/home 映射到 CoreCountrySpecific
 function Get-EditionName($e) {
   switch ($e.ToLower()) {
     "core"  { "CoreCountrySpecific" }
@@ -117,17 +117,20 @@ function Get-EditionName($e) {
   }
 }
 
-# >>> CHANGED: 计算 ConvertConfig 里 vAutoEditions 的值
-#   pro   -> "Professional=<Virtual>"
-#   multi -> "Professional=<Virtual>"（只映射 Pro，CoreCountrySpecific 保持原样）
-#   其他  -> $null
+# >>> CHANGED: vAutoEditions 是逗号分隔的目标 edition 名列表（与 UUP dump 官方 ConvertConfig.ini 一致）
+#   pro / multi -> 返回目标名列表（multi 下 CoreCountrySpecific 无法升级到这些目标，自动不转换）
+#   其他        -> $null
 function Get-VAutoEditionsValue {
   param([string]$Edition, [string]$VirtualEdition)
+
   if ([string]::IsNullOrWhiteSpace($VirtualEdition)) { return $null }
-  if ($Edition -in @('pro','multi')) {
-    return "Professional=$VirtualEdition"
+  if ($Edition -notin @('pro','multi')) { return $null }
+
+  if ($VirtualEdition -eq 'All') {
+    # 与 UUP dump 官方 ConvertConfig.ini 保持一致
+    return "ProfessionalWorkstation,ProfessionalEducation,Education,Enterprise,IoTEnterprise"
   }
-  return $null
+  return $VirtualEdition
 }
 
 $dotSystemRevision = if ([string]::IsNullOrWhiteSpace($revision)) { '' } else { ".$revision" }
@@ -282,16 +285,24 @@ L7: Got editions={1}." -f (Get-EditionName $edition), ($editions -join ','))
   | Select-Object -First 1
   | ForEach-Object {
       $id = $_.Value.uuid
+
+      # >>> CHANGED: UUP dump API edition 参数用小写标识符
+      $uupEditionParam = if ($edition -eq "multi") {
+        "corecountryspecific;professional"
+      } else {
+        $target.edition.ToLowerInvariant()
+      }
+
       [PSCustomObject]@{
         name               = $name
         title              = $_.Value.title
         build              = $_.Value.build
         id                 = $id
         edition            = $target.edition
-        virtualEdition     = $target['virtualEdition']   # vAutoEditions 串，如 "Professional=Enterprise"
-        apiUrl             = 'https://api.uupdump.net/get.php?' + (New-QueryString @{ id = $id; lang = $lang; edition = if ($edition -eq "multi") { "corecountryspecific;professional" } else { $target.edition } })
-        downloadUrl        = 'https://uupdump.net/download.php?' + (New-QueryString @{ id = $id; pack = $lang; edition = if ($edition -eq "multi") { "corecountryspecific;professional" } else { $target.edition } })
-        downloadPackageUrl = 'https://uupdump.net/get.php?' + (New-QueryString @{ id = $id; pack = $lang; edition = if ($edition -eq "multi") { "corecountryspecific;professional" } else { $target.edition } })
+        virtualEdition     = $target['virtualEdition']   # vAutoEditions 列表，如 "Enterprise" 或 "ProfessionalWorkstation,ProfessionalEducation,Education,Enterprise,IoTEnterprise"
+        apiUrl             = 'https://api.uupdump.net/get.php?' + (New-QueryString @{ id = $id; lang = $lang; edition = $uupEditionParam })
+        downloadUrl        = 'https://uupdump.net/download.php?' + (New-QueryString @{ id = $id; pack = $lang; edition = $uupEditionParam })
+        downloadPackageUrl = 'https://uupdump.net/get.php?' + (New-QueryString @{ id = $id; pack = $lang; edition = $uupEditionParam })
       }
     }
 }
@@ -364,7 +375,7 @@ function Get-WindowsIso($name, $destinationDirectory) {
   if (-not $iso) { throw "Can't find UUP for $name ($($TARGETS.$name.search)), lang=$lang." }
 
   $isoHasEdition    = $iso.PSObject.Properties.Name -contains 'edition' -and $iso.edition
-  # >>> CHANGED: virtualEdition 现在可能是 "Professional=Enterprise" 这类串
+  # >>> CHANGED: virtualEdition 现在是逗号分隔的列表串
   $hasVirtualMember = ($iso.PSObject.Properties.Name -contains 'virtualEdition') -and
                       (-not [string]::IsNullOrWhiteSpace($iso.virtualEdition))
   $effectiveEdition = if ($isoHasEdition) { $iso.edition } else { $TARGETS.$name.edition }
@@ -390,18 +401,39 @@ function Get-WindowsIso($name, $destinationDirectory) {
   if (Test-Path $buildDirectory) { Remove-Item -Force -Recurse $buildDirectory | Out-Null }
   New-Item -ItemType Directory -Force $buildDirectory | Out-Null
 
-  # >>> CHANGED: 标题展示用用户指定的虚拟版本名，而不是 "Professional=Enterprise"
-  $edn = if ($hasVirtualMember) { $virtualEdition } else { $effectiveEdition }
+  # >>> CHANGED: 标题展示用用户指定的虚拟版本名；All 显示 Virtual-All
+  $edn = if ($hasVirtualMember) {
+    if ($virtualEdition -eq 'All') { 'Virtual-All' } else { $virtualEdition }
+  } else {
+    $effectiveEdition
+  }
   Write-CleanLine $edn
   $title = "$name $edn $($iso.build)"
 
   Write-CleanLine "Downloading the UUP dump download package for $title from $($iso.downloadPackageUrl)"
-  # >>> CHANGED: 下载包 body 里 virtualEditions[] 用用户传入的虚拟版本名
-  $downloadPackageBody = if ($hasVirtualMember) {
-    @{ autodl=3; updates=1; cleanup=1; 'virtualEditions[]'=$virtualEdition }
+
+  # >>> CHANGED: virtualEditions[] 多值；All 展开为官方 5 个目标
+  $virtualEditionsList = @(
+    if ($hasVirtualMember) {
+      if ($virtualEdition -eq 'All') {
+        'ProfessionalWorkstation','ProfessionalEducation','Education','Enterprise','IoTEnterprise'
+      } else {
+        $virtualEdition
+      }
+    }
+  )
+
+  # >>> CHANGED: 有多个 virtualEditions[] 时必须用字符串 body（hashtable 不能重复 key）
+  $downloadPackageBody = if ($virtualEditionsList.Count -gt 0) {
+    $pairs = @('autodl=3','updates=1','cleanup=1')
+    foreach ($ve in $virtualEditionsList) {
+      $pairs += "virtualEditions[]=$([System.Net.WebUtility]::UrlEncode($ve))"
+    }
+    ($pairs -join '&')
   } else {
     @{ autodl=2; updates=1; cleanup=1 }
   }
+
   Invoke-WebRequest -Method Post -Uri $iso.downloadPackageUrl -Body $downloadPackageBody -OutFile "$buildDirectory.zip" | Out-Null
   Expand-Archive "$buildDirectory.zip" $buildDirectory
 
@@ -420,11 +452,11 @@ function Get-WindowsIso($name, $destinationDirectory) {
   }
   if ($netfx3) { $convertConfig = $convertConfig -replace '^(NetFx3\s*)=.*', '$1=1'; $tag += ".N" }
 
-  # >>> CHANGED: vAutoEditions 使用 $iso.virtualEdition（"Professional=<Virtual>"），multi 下 CoreCountrySpecific 不变
+  # >>> CHANGED: vAutoEditions 直接写逗号列表（与官方语法一致）
   if ($hasVirtualMember) {
     $convertConfig = $convertConfig `
       -replace '^(StartVirtual\s*)=.*','$1=1' `
-      -replace '^(vDeleteSource\s*)=.*','$1=1' `
+      -replace '^(vDeleteSource\s*)=.*','$1=0' `
       -replace '^(vAutoEditions\s*)=.*',"`$1=$($iso.virtualEdition)"
   }
   Set-Content -Encoding ascii -Path $buildDirectory/ConvertConfig.ini -Value $convertConfig
@@ -484,7 +516,7 @@ function Get-WindowsIso($name, $destinationDirectory) {
       build   = $iso.build
       version = $verbuild
       tags    = $tag
-      # >>> CHANGED: 元数据里记录用户指定的虚拟版本
+      # >>> CHANGED: 记录用户选择（All 或具体版本）
       virtualEdition = if ($hasVirtualMember) { $virtualEdition } else { $null }
       checksum = $isoChecksum
       images  = @($windowsImages)

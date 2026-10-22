@@ -2,7 +2,7 @@ name: Build Windows
 run-name: >
   ${{ inputs.versions }}
   ${{ fromJSON('{"Pro":"PRO","Home China":"HOME-CHINA","Multi":"MULTI"}')[inputs.edition] }}
-  ${{ inputs.virtualEdition != 'None' && fromJSON('{"Education":"EDU","Enterprise":"ENT","ProfessionalEducation":"PROEDU","ProfessionalWorkstation":"PROWS"}')[inputs.virtualEdition] || '' }}
+  ${{ inputs.virtualEdition != 'None' && fromJSON('{"All":"ALL","Education":"EDU","Enterprise":"ENT","ProfessionalEducation":"PROEDU","ProfessionalWorkstation":"PROWS"}')[inputs.virtualEdition] || '' }}
   ${{ fromJSON('{"x64":"X64","arm64":"ARM64"}')[inputs.architecture] }}
   ${{ fromJSON('{
     "Arabic (Saudi Arabia)":"AR","Bulgarian (Bulgaria)":"BG","Czech (Czech Republic)":"CS","Danish (Denmark)":"DA","German (Germany)":"DE","Greek (Greece)":"EL",
@@ -46,16 +46,15 @@ on:
       edition:
         description: "Windows edition to build"
         type: choice
-        # >>> CHANGED: Home -> Home China
         options: [Pro, Home China, Multi]
         default: Pro
         required: true
-      # >>> CHANGED: 新增虚拟版本转换选项（仅对 Pro / Multi 生效）
       virtualEdition:
         description: "Convert Pro to a virtual edition (Pro / Multi only)"
         type: choice
         options:
           - None
+          - All
           - Education
           - Enterprise
           - ProfessionalEducation
@@ -197,7 +196,6 @@ jobs:
             'Windows CANARY'                 = 'windows-canary'
           }
 
-          # >>> CHANGED: edition 映射（Home China -> core，脚本内 core 映射到 CoreCountrySpecific）
           $editionMap = @{
             'Pro'        = 'pro'
             'Home China' = 'core'
@@ -208,7 +206,6 @@ jobs:
           $verCode     = $verMap['${{ inputs.versions }}']
           $editionCode = $editionMap['${{ inputs.edition }}']
 
-          # >>> CHANGED: virtualEdition 参数处理（仅 Pro / Multi 生效）
           $virtualEditionInput = '${{ inputs.virtualEdition }}'
           $virtualEditionArg = ''
           if ($virtualEditionInput -and $virtualEditionInput -ne 'None') {
@@ -233,7 +230,6 @@ jobs:
 
           echo "lang=$langCode"            >> $env:GITHUB_OUTPUT
           echo "version=$verCode"          >> $env:GITHUB_OUTPUT
-          # >>> CHANGED: 输出映射后的 edition 和 virtualEdition
           echo "edition=$editionCode"      >> $env:GITHUB_OUTPUT
           echo "virtualEdition=$virtualEditionInput" >> $env:GITHUB_OUTPUT
           if ($opts) {
@@ -244,7 +240,6 @@ jobs:
         id: build_windows
         shell: pwsh
         run: |
-          # >>> CHANGED: -edition 用映射后的值
           pwsh uup-dump-get-windows-iso.ps1 ${{ steps.map.outputs.version }} ${{ inputs.architecture == 'arm64' && 'c:/output' || 'd:/output' }} -architecture ${{ inputs.architecture }} -edition ${{ steps.map.outputs.edition }} -lang ${{ steps.map.outputs.lang }} ${{ steps.map.outputs.options }}
           echo "iso_name=$env:ISO_NAME" >> $env:GITHUB_OUTPUT
 
@@ -293,7 +288,6 @@ jobs:
           $opts = '${{ steps.map.outputs.options }}'
           $optsRow = $null
           if (-not [string]::IsNullOrWhiteSpace($opts)) {
-            # >>> CHANGED: 支持 -virtualEdition <Value> 带值参数
             $descMap = @{
               '-esd'     = 'Use ESD compression'
               '-drivers' = 'Add additional drivers'
@@ -367,8 +361,7 @@ jobs:
           echo "title=$($iso.title)" >> $env:GITHUB_ENV
           echo "images=$($finalImageName)" >> $env:GITHUB_ENV
           echo "iso_checksum=$($iso.checksum)" >> $env:GITHUB_ENV
-          # >>> CHANGED: tagname 里 Home -> HOME-CHINA，并追加虚拟版本后缀
-          echo "tagname=$($iso.build).$($iso.version).${{ fromJSON('{"Pro":"PRO","Home China":"HOME-CHINA","Multi":"MULTI"}')[inputs.edition] }}${{ inputs.virtualEdition != 'None' && fromJSON('{"Education":".EDU","Enterprise":".ENT","ProfessionalEducation":".PROEDU","ProfessionalWorkstation":".PROWS"}')[inputs.virtualEdition] || '' }}.${{ fromJSON('{"x64":"X64","arm64":"ARM64"}')[inputs.architecture] }}.${{ fromJSON('{"ar-sa":"AR","bg-bg":"BG","cs-cz":"CS","da-dk":"DA","de-de":"DE","el-gr":"EL","en-gb":"EN","en-us":"EN","es-es":"ES","es-mx":"ES","et-ee":"ET","fi-fi":"FI","fr-ca":"FR","fr-fr":"FR","he-il":"HE","hr-hr":"HR","hu-hu":"HU","it-it":"IT","ja-jp":"JA","ko-kr":"KO","lt-lt":"LT","lv-lv":"LV","nb-no":"NB","nl-nl":"NL","pl-pl":"PL","pt-br":"PT","pt-pt":"PT","ro-ro":"RO","ru-ru":"RU","sk-sk":"SK","sl-si":"SL","sr-latn-rs":"SR","sv-se":"SV","th-th":"TH","tr-tr":"TR","uk-ua":"UK","zh-cn":"ZH","zh-tw":"ZH"}')[steps.map.outputs.lang] }}$($iso.tags)" >> $env:GITHUB_ENV
+          echo "tagname=$($iso.build).$($iso.version).${{ fromJSON('{"Pro":"PRO","Home China":"HOME-CHINA","Multi":"MULTI"}')[inputs.edition] }}${{ inputs.virtualEdition != 'None' && fromJSON('{"All":".ALL","Education":".EDU","Enterprise":".ENT","ProfessionalEducation":".PROEDU","ProfessionalWorkstation":".PROWS"}')[inputs.virtualEdition] || '' }}.${{ fromJSON('{"x64":"X64","arm64":"ARM64"}')[inputs.architecture] }}.${{ fromJSON('{"ar-sa":"AR","bg-bg":"BG","cs-cz":"CS","da-dk":"DA","de-de":"DE","el-gr":"EL","en-gb":"EN","en-us":"EN","es-es":"ES","es-mx":"ES","et-ee":"ET","fi-fi":"FI","fr-ca":"FR","fr-fr":"FR","he-il":"HE","hr-hr":"HR","hu-hu":"HU","it-it":"IT","ja-jp":"JA","ko-kr":"KO","lt-lt":"LT","lv-lv":"LV","nb-no":"NB","nl-nl":"NL","pl-pl":"PL","pt-br":"PT","pt-pt":"PT","ro-ro":"RO","ru-ru":"RU","sk-sk":"SK","sl-si":"SL","sr-latn-rs":"SR","sv-se":"SV","th-th":"TH","tr-tr":"TR","uk-ua":"UK","zh-cn":"ZH","zh-tw":"ZH"}')[steps.map.outputs.lang] }}$($iso.tags)" >> $env:GITHUB_ENV
 
       - name: Create Release
         id: create_release
