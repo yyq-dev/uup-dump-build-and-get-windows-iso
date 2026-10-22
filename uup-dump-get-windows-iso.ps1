@@ -456,7 +456,7 @@ function Get-WindowsIso($name, $destinationDirectory) {
   if ($hasVirtualMember) {
     $convertConfig = $convertConfig `
       -replace '^(StartVirtual\s*)=.*','$1=1' `
-      -replace '^(vDeleteSource\s*)=.*','$1=1' `
+      -replace '^(vDeleteSource\s*)=.*','$1=0' `
       -replace '^(vAutoEditions\s*)=.*',"`$1=$($iso.virtualEdition)"
   }
   Set-Content -Encoding ascii -Path $buildDirectory/ConvertConfig.ini -Value $convertConfig
